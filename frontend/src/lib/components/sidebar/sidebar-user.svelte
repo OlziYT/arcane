@@ -25,7 +25,7 @@
 	});
 
 	async function getGravatarUrl(email: string | undefined, size = 40): Promise<string> {
-		if (!email) return '';
+		if (!email) return getDefaultProfilePicture();
 
 		const encoder = new TextEncoder();
 		const data = encoder.encode(email.toLowerCase().trim());
@@ -47,28 +47,28 @@
 						class="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
 						{...props}
 					>
-						{#if user && user.displayName}
+						{#if user}
 							<Avatar.Root class="size-8 rounded-lg">
 								{#if $settingsStore.enableGravatar}
 									{#await getGravatarUrl(user?.email)}
-										<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName} />
+										<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 									{:then url}
-										<Avatar.Image src={url} alt={user.displayName} />
+										<Avatar.Image src={url || getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 									{:catch}
-										<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName} />
+										<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 									{/await}
 								{:else}
-									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName} />
+									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 								{/if}
 								<Avatar.Fallback
 									class="from-primary/20 to-primary/10 text-primary border-primary/20 rounded-lg border bg-linear-to-br"
 								>
-									{user.displayName?.charAt(0).toUpperCase()}
+									{(user.displayName ?? user.username).charAt(0).toUpperCase()}
 								</Avatar.Fallback>
 							</Avatar.Root>
 							{#if !isCollapsed}
 								<div class="grid flex-1 pl-0 text-left text-sm leading-tight">
-									<span class="truncate font-medium">{user.displayName}</span>
+									<span class="truncate font-medium">{user.displayName ?? user.username}</span>
 									<span class="truncate text-xs">{user.email}</span>
 								</div>
 							{/if}
@@ -98,23 +98,23 @@
 						<Avatar.Root class="size-8 shrink-0 rounded-lg">
 							{#if $settingsStore.enableGravatar}
 								{#await getGravatarUrl(user?.email)}
-									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName} />
+									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 								{:then url}
-									<Avatar.Image src={url} alt={user.displayName} />
+									<Avatar.Image src={url || getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 								{:catch}
-									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName} />
+									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 								{/await}
 							{:else}
-								<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName} />
+								<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 							{/if}
 							<Avatar.Fallback
 								class="from-primary/20 to-primary/10 text-primary border-primary/20 rounded-lg border bg-linear-to-br text-xs font-semibold"
 							>
-								{user.displayName?.charAt(0).toUpperCase()}
+								{(user.displayName ?? user.username).charAt(0).toUpperCase()}
 							</Avatar.Fallback>
 						</Avatar.Root>
 						<div class="grid min-w-0 flex-1 leading-tight">
-							<span class="truncate text-sm font-medium">{user.displayName}</span>
+							<span class="truncate text-sm font-medium">{user.displayName ?? user.username}</span>
 							<span class="text-muted-foreground truncate text-xs">{user.email}</span>
 						</div>
 					</div>
