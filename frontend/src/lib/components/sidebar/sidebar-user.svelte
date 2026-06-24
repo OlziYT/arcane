@@ -35,6 +35,15 @@
 
 		return `https://www.gravatar.com/avatar/${hash}?s=${size}`;
 	}
+
+	function getUserLabel(user: User): string {
+		const label = (user.displayName ?? user.username ?? '').trim();
+		return label || 'User';
+	}
+
+	function getUserInitial(user: User): string {
+		return getUserLabel(user).charAt(0).toUpperCase() || '?';
+	}
 </script>
 
 <Sidebar.Menu>
@@ -53,22 +62,22 @@
 									{#await getGravatarUrl(user?.email)}
 										<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
 									{:then url}
-										<Avatar.Image src={url || getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
+										<Avatar.Image src={url || getDefaultProfilePicture()} alt={getUserLabel(user)} />
 									{:catch}
-										<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
+										<Avatar.Image src={getDefaultProfilePicture()} alt={getUserLabel(user)} />
 									{/await}
 								{:else}
-									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
+									<Avatar.Image src={getDefaultProfilePicture()} alt={getUserLabel(user)} />
 								{/if}
 								<Avatar.Fallback
 									class="from-primary/20 to-primary/10 text-primary border-primary/20 rounded-lg border bg-linear-to-br"
 								>
-									{(user.displayName ?? user.username).charAt(0).toUpperCase()}
+									{getUserInitial(user)}
 								</Avatar.Fallback>
 							</Avatar.Root>
 							{#if !isCollapsed}
 								<div class="grid flex-1 pl-0 text-left text-sm leading-tight">
-									<span class="truncate font-medium">{user.displayName ?? user.username}</span>
+									<span class="truncate font-medium">{getUserLabel(user)}</span>
 									<span class="truncate text-xs">{user.email}</span>
 								</div>
 							{/if}
@@ -98,23 +107,23 @@
 						<Avatar.Root class="size-8 shrink-0 rounded-lg">
 							{#if $settingsStore.enableGravatar}
 								{#await getGravatarUrl(user?.email)}
-									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
+									<Avatar.Image src={getDefaultProfilePicture()} alt={getUserLabel(user)} />
 								{:then url}
-									<Avatar.Image src={url || getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
+									<Avatar.Image src={url || getDefaultProfilePicture()} alt={getUserLabel(user)} />
 								{:catch}
-									<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
+									<Avatar.Image src={getDefaultProfilePicture()} alt={getUserLabel(user)} />
 								{/await}
 							{:else}
-								<Avatar.Image src={getDefaultProfilePicture()} alt={user.displayName ?? user.username} />
+								<Avatar.Image src={getDefaultProfilePicture()} alt={getUserLabel(user)} />
 							{/if}
 							<Avatar.Fallback
 								class="from-primary/20 to-primary/10 text-primary border-primary/20 rounded-lg border bg-linear-to-br text-xs font-semibold"
 							>
-								{(user.displayName ?? user.username).charAt(0).toUpperCase()}
+								{getUserInitial(user)}
 							</Avatar.Fallback>
 						</Avatar.Root>
 						<div class="grid min-w-0 flex-1 leading-tight">
-							<span class="truncate text-sm font-medium">{user.displayName ?? user.username}</span>
+							<span class="truncate text-sm font-medium">{getUserLabel(user)}</span>
 							<span class="text-muted-foreground truncate text-xs">{user.email}</span>
 						</div>
 					</div>
