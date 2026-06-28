@@ -7,11 +7,11 @@
 	import HeaderCard from '$lib/components/header-card.svelte';
 	import ApiKeyFormSheet from '$lib/components/sheets/api-key-form-sheet.svelte';
 	import { Card } from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Avatar from '$lib/components/ui/avatar';
+	import * as ImageCropper from '$lib/components/ui/image-cropper';
 	import { ArcaneButton } from '$lib/components/arcane-button/index.js';
+	import TextInputWithLabel from '$lib/components/form/text-input-with-label.svelte';
 	import LocalePicker from '$lib/components/locale-picker.svelte';
 	import FontSizePicker from '$lib/components/font-size-picker.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -20,6 +20,8 @@
 	import userStore from '$lib/stores/user-store';
 	import settingsStore from '$lib/stores/config-store';
 	import { getDefaultProfilePicture } from '$lib/utils/docker';
+	import { avatarUploadLimitBytes, prepareAvatarUploadFile } from '$lib/utils/avatar-upload';
+	import { cn } from '$lib/utils';
 	import { GLOBAL_SCOPE } from '$lib/types/auth';
 	import type { ApiKey, ApiKeyCreated, ApiKeyPermissionGrant, CreateUserApiKey } from '$lib/types/auth';
 	import { UserIcon, LogoutIcon, ShieldAlertIcon, ApiKeyIcon, AddIcon, CopyIcon, TrashIcon } from '$lib/icons';
@@ -62,6 +64,10 @@
 	const autoLogin = fromStore(settingsStore.autoLoginEnabled);
 	const autoLoginEnabled = $derived(autoLogin.current);
 	const gravatarEnabled = $derived(Boolean(settings.current?.enableGravatar));
+	const avatarMaxUploadSizeMb = $derived(
+		Number(settings.current?.avatarMaxUploadSizeMb) > 0 ? Number(settings.current?.avatarMaxUploadSizeMb) : 2
+	);
+	const avatarMaxUploadSizeBytes = $derived(avatarUploadLimitBytes(avatarMaxUploadSizeMb));
 
 	let profileDisplayName = $state('');
 	let profileEmail = $state('');
@@ -75,12 +81,17 @@
 
 	let revokingAll = $state(false);
 	let avatarUrl = $state<string>(getDefaultProfilePicture());
+	let avatarCacheBuster = $state(Date.now());
+	const avatarSrc = $derived(currentUser?.avatarUrl ? `${currentUser.avatarUrl}?t=${avatarCacheBuster}` : '');
+	let cropperAvatarSrc = $derived(avatarSrc || avatarUrl);
 
 	let apiKeys = $state<ApiKey[]>([]);
 	let apiKeysLoading = $state(false);
 	let showCreateKeyForm = $state(false);
 	let creatingKey = $state(false);
 	let createdKey = $state<ApiKeyCreated | null>(null);
+
+	let avatarUploading = $state(false);
 
 	$effect(() => {
 		if (!profileLoaded && currentUser) {
@@ -112,7 +123,7 @@
 			const hash = Array.from(new Uint8Array(hashBuffer))
 				.map((b) => b.toString(16).padStart(2, '0'))
 				.join('');
-			avatarUrl = `https://www.gravatar.com/avatar/${hash}?s=128`;
+			avatarUrl = `https://www.gravatar.com/avatar/${hash}?s=128&d=404`;
 		} catch {
 			avatarUrl = getDefaultProfilePicture();
 		}
@@ -139,6 +150,51 @@
 	function resetProfile() {
 		profileDisplayName = currentUser?.displayName ?? '';
 		profileEmail = currentUser?.email ?? '';
+	}
+
+	async function handleCroppedAvatar(url: string) {
+		avatarUploading = true;
+		try {
+			const preparedFile = await prepareAvatarUploadFile(url, avatarMaxUploadSizeBytes, ImageCropper.getFileFromUrl);
+			if (!preparedFile.ok) {
+				toast.error(m.account_avatar_size_error({ maxSizeMb: avatarMaxUploadSizeMb }));
+				return;
+			}
+
+			const updatedUser = await userService.uploadMyAvatar(preparedFile.file);
+			await userStore.setUser(updatedUser);
+			avatarCacheBuster = Date.now();
+			toast.success(m.account_avatar_upload_success());
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : m.account_avatar_upload_failed());
+		} finally {
+			avatarUploading = false;
+			URL.revokeObjectURL(url);
+			if (cropperAvatarSrc === url) cropperAvatarSrc = avatarSrc || avatarUrl;
+		}
+	}
+
+	function handleUnsupportedAvatarFile() {
+		toast.error(m.account_avatar_unsupported_file());
+	}
+
+	function handleAvatarCropError() {
+		toast.error(m.account_avatar_crop_failed());
+	}
+
+	async function removeAvatar() {
+		if (!currentUser?.avatarUrl) return;
+		avatarUploading = true;
+		try {
+			const updatedUser = await userService.deleteMyAvatar();
+			await userStore.setUser(updatedUser);
+			avatarCacheBuster = Date.now();
+			toast.success(m.account_avatar_remove_success());
+		} catch (err) {
+			toast.error(err instanceof Error ? err.message : m.account_avatar_remove_failed());
+		} finally {
+			avatarUploading = false;
+		}
 	}
 
 	async function changePassword() {
@@ -240,8 +296,8 @@
 					<UserIcon class="size-4 sm:size-5" />
 				</div>
 				<div class="min-w-0">
-					<h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">Account</h1>
-					<p class="text-muted-foreground mt-1 text-sm">Manage your profile, password, and active sessions</p>
+					<h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{m.account_title()}</h1>
+					<p class="text-muted-foreground mt-1 text-sm">{m.account_subtitle()}</p>
 				</div>
 			</div>
 		</div>
@@ -254,72 +310,132 @@
 				<!-- Profile -->
 				<Card class="overflow-hidden">
 					<div class="border-b p-4 sm:p-6">
-						<h2 class="text-base font-semibold tracking-tight sm:text-lg">Profile</h2>
-						<p class="text-muted-foreground mt-1 text-xs sm:text-sm">Update your display name and email</p>
+						<h2 class="text-base font-semibold tracking-tight sm:text-lg">{m.account_profile_title()}</h2>
+						<p class="text-muted-foreground mt-1 text-xs sm:text-sm">{m.account_profile_description()}</p>
 					</div>
 					<div class="space-y-5 p-4 sm:p-6">
-						<div class="flex items-center justify-between gap-4">
-							<div class="flex min-w-0 items-center gap-4">
-								<Avatar.Root class="size-16 rounded-xl">
-									<Avatar.Image src={avatarUrl} alt={currentUser.displayName ?? currentUser.username} />
-									<Avatar.Fallback
-										class="from-primary/20 to-primary/10 text-primary border-primary/20 rounded-xl border bg-linear-to-br text-xl font-semibold"
+						<ImageCropper.Root
+							id="account-avatar-cropper"
+							bind:src={cropperAvatarSrc}
+							accept="image/png, image/jpeg, image/webp"
+							onCropped={handleCroppedAvatar}
+							onError={handleAvatarCropError}
+							onUnsupportedFile={handleUnsupportedAvatarFile}
+						>
+							<ImageCropper.Dialog>
+								<div class="space-y-1">
+									<h3 class="text-base font-semibold tracking-tight">{m.account_avatar_crop_title()}</h3>
+									<p class="text-muted-foreground text-sm">{m.account_avatar_crop_description()}</p>
+								</div>
+								<div class="bg-muted/40 h-72 overflow-hidden rounded-lg border">
+									<ImageCropper.Cropper />
+								</div>
+								<ImageCropper.Controls class="justify-end">
+									<ImageCropper.Cancel disabled={avatarUploading} />
+									<ImageCropper.Crop disabled={avatarUploading} />
+								</ImageCropper.Controls>
+							</ImageCropper.Dialog>
+
+							<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+								<div class="flex min-w-0 items-center gap-4">
+									<ImageCropper.UploadTrigger
+										aria-label={m.account_upload_photo()}
+										class={cn(
+											'group/avatar relative size-16 overflow-hidden rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
+											avatarUploading && 'pointer-events-none opacity-70'
+										)}
+										disabled={avatarUploading}
 									>
-										{(currentUser.displayName ?? currentUser.username).charAt(0).toUpperCase()}
-									</Avatar.Fallback>
-								</Avatar.Root>
-								<div class="min-w-0">
-									<div class="text-sm font-medium">@{currentUser.username}</div>
-									<div class="text-muted-foreground text-xs">
-										{isOidcUser ? 'Single sign-on account' : 'Local account'}
+										{#key avatarCacheBuster}
+											<Avatar.Root class="size-16 rounded-xl transition-all group-hover/avatar:opacity-80">
+												{#if avatarSrc}
+													<Avatar.Image src={avatarSrc} alt={currentUser.displayName ?? currentUser.username} />
+												{:else if avatarUrl}
+													<Avatar.Image src={avatarUrl} alt={currentUser.displayName ?? currentUser.username} />
+												{/if}
+												<Avatar.Fallback class="bg-primary text-primary-foreground rounded-xl text-xl font-semibold">
+													{(currentUser.displayName ?? currentUser.username).charAt(0).toUpperCase()}
+												</Avatar.Fallback>
+											</Avatar.Root>
+										{/key}
+										<div
+											class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover/avatar:opacity-100"
+										>
+											<div class="text-white text-xs font-medium">{m.account_upload_overlay()}</div>
+										</div>
+									</ImageCropper.UploadTrigger>
+									<div class="min-w-0 flex flex-col items-start gap-1">
+										<div class="text-sm font-medium">@{currentUser.username}</div>
+										<div class="text-muted-foreground text-xs">
+											{isOidcUser ? m.account_single_sign_on() : m.account_local_account()}
+										</div>
+										{#if currentUser.avatarUrl}
+											<div class="mt-1 flex items-center gap-2">
+												<ArcaneButton
+													action="remove"
+													size="sm"
+													tone="ghost"
+													customLabel={m.account_remove_photo()}
+													showLabel={true}
+													class="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+													onclick={removeAvatar}
+													disabled={avatarUploading}
+												/>
+											</div>
+										{/if}
+									</div>
+								</div>
+								<div class="hidden text-right sm:block">
+									{#if safeFormatDate(currentUser.createdAt, 'PP')}
+										<div class="text-muted-foreground text-xs">
+											{m.account_member_since()}
+											{safeFormatDate(currentUser.createdAt, 'PP')}
+										</div>
+									{/if}
+									<div class="text-muted-foreground text-xs" title={currentUser.lastLogin ?? ''}>
+										{m.account_last_login_prefix()}
+										{safeFormatRelative(currentUser.lastLogin) ?? m.common_never()}
 									</div>
 								</div>
 							</div>
-							<div class="hidden text-right sm:block">
-								{#if safeFormatDate(currentUser.createdAt, 'PP')}
-									<div class="text-muted-foreground text-xs">Member since {safeFormatDate(currentUser.createdAt, 'PP')}</div>
-								{/if}
-								<div class="text-muted-foreground text-xs" title={currentUser.lastLogin ?? ''}>
-									Last login {safeFormatRelative(currentUser.lastLogin) ?? 'Never'}
-								</div>
-							</div>
-						</div>
+						</ImageCropper.Root>
 
-						<div class="grid gap-4 sm:grid-cols-2">
-							<div class="space-y-2">
-								<Label for="account-display-name">Display Name</Label>
-								<Input id="account-display-name" bind:value={profileDisplayName} placeholder="Your name" disabled={isOidcUser} />
-							</div>
-							<div class="space-y-2">
-								<Label for="account-email">Email</Label>
-								<Input
-									id="account-email"
-									type="email"
-									bind:value={profileEmail}
-									placeholder="you@example.com"
-									disabled={isOidcUser}
-								/>
-							</div>
+						<div class="grid gap-5 sm:grid-cols-2">
+							<TextInputWithLabel
+								id="account-display-name"
+								bind:value={profileDisplayName}
+								label={m.account_display_name_label()}
+								placeholder={m.account_display_name_placeholder()}
+								disabled={isOidcUser}
+							/>
+							<TextInputWithLabel
+								id="account-email"
+								type="email"
+								bind:value={profileEmail}
+								label={m.account_email_label()}
+								placeholder={m.account_email_placeholder()}
+								disabled={isOidcUser}
+							/>
 						</div>
 						{#if !isOidcUser}
 							<div class="flex justify-end gap-2">
 								<ArcaneButton
 									action="cancel"
 									tone="outline"
-									customLabel="Reset"
+									customLabel={m.common_reset()}
 									onclick={resetProfile}
 									disabled={!profileDirty || profileSaving}
 								/>
 								<ArcaneButton
 									action="save"
-									customLabel="Save profile"
+									customLabel={m.account_save_profile()}
 									onclick={saveProfile}
 									loading={profileSaving}
 									disabled={!profileDirty || profileSaving}
 								/>
 							</div>
 						{:else}
-							<p class="text-muted-foreground text-xs">Profile details are managed by your identity provider.</p>
+							<p class="text-muted-foreground text-xs">{m.account_profile_managed_by_idp()}</p>
 						{/if}
 					</div>
 				</Card>
@@ -328,37 +444,39 @@
 				{#if !isOidcUser}
 					<Card class="overflow-hidden">
 						<div class="border-b p-4 sm:p-6">
-							<h2 class="text-base font-semibold tracking-tight sm:text-lg">Password</h2>
-							<p class="text-muted-foreground mt-1 text-xs sm:text-sm">Change your account password</p>
+							<h2 class="text-base font-semibold tracking-tight sm:text-lg">{m.account_password()}</h2>
+							<p class="text-muted-foreground mt-1 text-xs sm:text-sm">{m.account_password_desc()}</p>
 						</div>
 						<div class="space-y-5 p-4 sm:p-6">
-							<div class="space-y-2">
-								<Label for="account-current-password">Current password</Label>
-								<Input
-									id="account-current-password"
+							<TextInputWithLabel
+								id="account-current-password"
+								type="password"
+								bind:value={currentPassword}
+								label={m.account_current_password()}
+								autocomplete="current-password"
+							/>
+							<div class="grid gap-5 sm:grid-cols-2">
+								<TextInputWithLabel
+									id="account-new-password"
 									type="password"
-									bind:value={currentPassword}
-									autocomplete="current-password"
+									bind:value={newPassword}
+									label={m.account_new_password()}
+									helpText={m.account_password_min_length()}
+									autocomplete="new-password"
 								/>
-							</div>
-							<div class="grid gap-4 sm:grid-cols-2">
-								<div class="space-y-2">
-									<Label for="account-new-password">New password</Label>
-									<Input id="account-new-password" type="password" bind:value={newPassword} autocomplete="new-password" />
-									<p class="text-muted-foreground text-xs">At least 8 characters</p>
-								</div>
-								<div class="space-y-2">
-									<Label for="account-confirm-password">Confirm new password</Label>
-									<Input id="account-confirm-password" type="password" bind:value={confirmPassword} autocomplete="new-password" />
-									{#if confirmPassword.length > 0 && confirmPassword !== newPassword}
-										<p class="text-destructive text-xs">Passwords don't match</p>
-									{/if}
-								</div>
+								<TextInputWithLabel
+									id="account-confirm-password"
+									type="password"
+									bind:value={confirmPassword}
+									label={m.account_confirm_password()}
+									error={confirmPassword.length > 0 && confirmPassword !== newPassword ? m.account_passwords_dont_match() : null}
+									autocomplete="new-password"
+								/>
 							</div>
 							<div class="flex justify-end">
 								<ArcaneButton
 									action="save"
-									customLabel="Update password"
+									customLabel={m.account_update_password()}
 									onclick={changePassword}
 									loading={passwordSaving}
 									disabled={!passwordValid || passwordSaving}
@@ -372,15 +490,15 @@
 				<Card class="overflow-hidden">
 					<div class="flex items-start justify-between gap-3 border-b p-4 sm:p-6">
 						<div class="min-w-0">
-							<h2 class="text-base font-semibold tracking-tight sm:text-lg">API keys</h2>
-							<p class="text-muted-foreground mt-1 text-xs sm:text-sm">Personal tokens for programmatic access</p>
+							<h2 class="text-base font-semibold tracking-tight sm:text-lg">{m.account_api_keys_title()}</h2>
+							<p class="text-muted-foreground mt-1 text-xs sm:text-sm">{m.account_api_keys_description()}</p>
 						</div>
 						{#if !showCreateKeyForm && !createdKey}
 							<ArcaneButton
 								action="create"
 								tone="outline"
 								size="sm"
-								customLabel="New key"
+								customLabel={m.account_new_key()}
 								icon={AddIcon}
 								onclick={() => (showCreateKeyForm = true)}
 							/>
@@ -474,21 +592,21 @@
 				<!-- Preferences -->
 				<Card class="overflow-hidden">
 					<div class="border-b p-4 sm:p-6">
-						<h2 class="text-base font-semibold tracking-tight sm:text-lg">Preferences</h2>
-						<p class="text-muted-foreground mt-1 text-xs sm:text-sm">Personal display preferences</p>
+						<h2 class="text-base font-semibold tracking-tight sm:text-lg">{m.account_preferences()}</h2>
+						<p class="text-muted-foreground mt-1 text-xs sm:text-sm">{m.account_preferences_desc()}</p>
 					</div>
 					<div class="divide-y p-2">
 						<div class="flex items-center justify-between gap-4 p-3">
 							<div class="min-w-0">
-								<div class="text-sm font-medium">Theme</div>
+								<div class="text-sm font-medium">{m.account_theme()}</div>
 								<div class="text-muted-foreground text-xs">{m.appearance_theme_current_user_description()}</div>
 							</div>
 							<ThemeModeSelector />
 						</div>
 						<div class="flex items-center justify-between gap-4 p-3">
 							<div class="min-w-0">
-								<div class="text-sm font-medium">Language</div>
-								<div class="text-muted-foreground text-xs">UI language for this account</div>
+								<div class="text-sm font-medium">{m.account_language()}</div>
+								<div class="text-muted-foreground text-xs">{m.account_language_desc()}</div>
 							</div>
 							<LocalePicker inline />
 						</div>
@@ -505,8 +623,8 @@
 				<!-- Roles & access -->
 				<Card class="overflow-hidden">
 					<div class="border-b p-4 sm:p-6">
-						<h2 class="text-base font-semibold tracking-tight sm:text-lg">Roles &amp; access</h2>
-						<p class="text-muted-foreground mt-1 text-xs sm:text-sm">Your assigned roles</p>
+						<h2 class="text-base font-semibold tracking-tight sm:text-lg">{m.account_roles_and_access()}</h2>
+						<p class="text-muted-foreground mt-1 text-xs sm:text-sm">{m.account_roles()}</p>
 					</div>
 					<div class="p-4 sm:p-6">
 						{#if currentUser.roleAssignments && currentUser.roleAssignments.length > 0}
@@ -516,9 +634,9 @@
 										<div class="min-w-0">
 											<div class="text-sm font-medium">{prettyRoleName(ra.roleId)}</div>
 											<div class="text-muted-foreground text-xs">
-												{ra.environmentId ? `Environment: ${ra.environmentId}` : 'Global scope'}
+												{ra.environmentId ? m.account_role_environment({ env: ra.environmentId }) : m.account_global_scope()}
 												{#if ra.source === 'oidc'}
-													<span class="ml-1 opacity-70">· via SSO</span>
+													<span class="ml-1 opacity-70">{m.account_via_sso()}</span>
 												{/if}
 											</div>
 										</div>
@@ -526,7 +644,7 @@
 								{/each}
 							</ul>
 						{:else}
-							<p class="text-muted-foreground text-sm">No roles assigned.</p>
+							<p class="text-muted-foreground text-sm">{m.account_no_roles()}</p>
 						{/if}
 
 						{#if currentUser.permissionsByEnv}
@@ -546,20 +664,20 @@
 						<div class="border-destructive/20 border-b p-4 sm:p-6">
 							<div class="flex items-center gap-2">
 								<ShieldAlertIcon class="text-destructive size-5" />
-								<h2 class="text-base font-semibold tracking-tight sm:text-lg">Danger zone</h2>
+								<h2 class="text-base font-semibold tracking-tight sm:text-lg">{m.account_danger_zone()}</h2>
 							</div>
-							<p class="text-muted-foreground mt-1 text-xs sm:text-sm">Session-level actions that affect every device</p>
+							<p class="text-muted-foreground mt-1 text-xs sm:text-sm">{m.account_danger_zone_desc()}</p>
 						</div>
 						<div class="space-y-4 p-4 sm:p-6">
 							<div class="space-y-2">
-								<div class="text-sm font-medium">Sign out other sessions</div>
+								<div class="text-sm font-medium">{m.account_signout_other()}</div>
 								<p class="text-muted-foreground text-xs">
-									Revokes every active session except this one. Useful if you forgot to log out somewhere.
+									{m.account_signout_other_desc()}
 								</p>
 								<ArcaneButton
 									action="restart"
 									tone="outline"
-									customLabel="Sign out other sessions"
+									customLabel={m.account_signout_other()}
 									onclick={logoutAllOther}
 									loading={revokingAll}
 									disabled={revokingAll}
@@ -569,13 +687,13 @@
 							<Separator />
 
 							<div class="space-y-2">
-								<div class="text-sm font-medium">Log out</div>
-								<p class="text-muted-foreground text-xs">Sign out of this device.</p>
+								<div class="text-sm font-medium">{m.common_log_out()}</div>
+								<p class="text-muted-foreground text-xs">{m.account_signout_this()}</p>
 								<form action="/logout" method="POST">
 									<ArcaneButton
 										action="cancel"
 										tone="outline"
-										customLabel="Log out"
+										customLabel={m.common_log_out()}
 										icon={LogoutIcon}
 										type="submit"
 										class="text-destructive border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
